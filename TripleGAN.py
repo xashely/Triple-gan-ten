@@ -2,6 +2,7 @@ import cifar10
 from ops import *
 from utils import *
 import time
+import numpy
 
 class TripleGAN(object) :
     def __init__(self, sess, epoch, batch_size, unlabel_batch_size, z_dim, dataset_name, n, gan_lr, cla_lr, checkpoint_dir, result_dir, log_dir):
@@ -146,13 +147,14 @@ class TripleGAN(object) :
 
         """ Graph Input """
         # images
-        self.inputs = tf.placeholder(tf.float32, [bs] + image_dims, name='real_images')
-        self.unlabelled_inputs = tf.placeholder(tf.float32, [unlabel_bs] + image_dims, name='unlabelled_images')
+        self.sym_x_l = tf.placeholder(tf.float32, [bs] + image_dims, name='sym_x_l')
+        self.sym_x_u = tf.placeholder(tf.float32, [unlabel_bs] + image_dims, name='sym_x_u')
+        self.sym_x_u_d = tf.placeholder(tf.float32, [unlabel_bs] + image_dims, name='sym_x_u_d')
         self.test_inputs = tf.placeholder(tf.float32, [test_bs] + image_dims, name='test_images')
 
         # labels
-        self.y = tf.placeholder(tf.float32, [bs, self.y_dim], name='y')
-        self.unlabelled_inputs_y = tf.placeholder(tf.float32, [unlabel_bs, self.y_dim])
+        self.sym_y = tf.placeholder(tf.float32, [bs, self.y_dim], name='y')
+        self.sym_x_u_y = tf.placeholder(tf.float32, [unlabel_bs, self.y_dim])
         self.test_label = tf.placeholder(tf.float32, [test_bs, self.y_dim], name='test_label')
         self.visual_y = tf.placeholder(tf.float32, [self.visual_num, self.y_dim], name='visual_y')
 
@@ -164,34 +166,38 @@ class TripleGAN(object) :
         # A Game with Three Players
 
         # output of D for real images
-        D_real, D_real_logits, _ = self.discriminator(self.inputs, self.y, is_training=True, reuse=False)
+        dis_out_p_l, dis_out_p_l_logits, _ = self.discriminator(self.sym_x_l, self.sym_y, is_training=True, reuse=False)
+        # output of D for unlabelled images
+        cla_out_y_d = self.classifier(self.sym_x_u_d, is_training=True, reuse=False)
+        dis_out_p_u, dis_out_p_u_logits, _ = self.discriminator(self.sym_x_u, cla_out_y_d, is_training=True, reuse=True)
 
         # output of D for fake images
-        G = self.generator(self.z, self.y, is_training=True, reuse=False)
-        D_fake, D_fake_logits, _ = self.discriminator(G, self.y, is_training=True, reuse=True)
+        gen_out_x = self.generator(self.z, self.sym_y, is_training=True, reuse=False)
+        dis_out_p_g, dis_out_p_g_logits, _ = self.discriminator(gen_out_x, self.sym_y, is_training=True, reuse=True)
 
         # output of C for real images
-        C_real_logits = self.classifier(self.inputs, is_training=True, reuse=False)
-        R_L = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=self.y, logits=C_real_logits))
+        C_real_logits = self.classifier(self.sym_x_l, is_training=True, reuse=True)
+        R_L = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=self.sym_y, logits=C_real_logits))
 
         # output of D for unlabelled images
-        Y_c = self.classifier(self.unlabelled_inputs, is_training=True, reuse=True)
-        D_cla, D_cla_logits, _ = self.discriminator(self.unlabelled_inputs, Y_c, is_training=True, reuse=True)
+        Y_c = self.classifier(self.sym_x_u, is_training=True, reuse=True)
+        D_cla, D_cla_logits, _ = self.discriminator(self.sym_x_u, Y_c, is_training=True, reuse=True)
 
         # output of C for fake images
-        C_fake_logits = self.classifier(G, is_training=True, reuse=True)
-        R_P = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=self.y, logits=C_fake_logits))
+        C_fake_logits = self.classifier(gen_out_x, is_training=True, reuse=True)
+        R_P = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=self.sym_y, logits=C_fake_logits))
 
         #
 
         # get loss for discriminator
-        d_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_real_logits, labels=tf.ones_like(D_real)))
-        d_loss_fake = (1-alpha)*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_fake_logits, labels=tf.zeros_like(D_fake)))
+        d_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=dis_out_p_l_logits, labels=tf.ones_like(dis_out_p_l)))
+        d_loss_real += tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=dis_out_p_u_logits, labels=tf.ones_like(dis_out_p_u)))
+        d_loss_fake = (1-alpha)*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=dis_out_p_g_logits, labels=tf.zeros_like(dis_out_p_g)))
         d_loss_cla = alpha*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_cla_logits, labels=tf.zeros_like(D_cla)))
         self.d_loss = d_loss_real + d_loss_fake + d_loss_cla
 
         # get loss for generator
-        self.g_loss = (1-alpha)*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_fake_logits, labels=tf.ones_like(D_fake)))
+        self.g_loss = (1-alpha)*tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=dis_out_p_g_logits, labels=tf.ones_like(dis_out_p_g)))
 
         # test loss for classify
         test_Y = self.classifier(self.test_inputs, is_training=False, reuse=True)
@@ -203,7 +209,7 @@ class TripleGAN(object) :
         c_loss_dis = tf.reduce_mean(max_c * tf.nn.softmax_cross_entropy_with_logits(logits=D_cla_logits, labels=tf.ones_like(D_cla)))
         # self.c_loss = alpha * c_loss_dis + R_L + self.alpha_p*R_P
 
-        # R_UL = self.unsup_weight * tf.reduce_mean(tf.squared_difference(Y_c, self.unlabelled_inputs_y))
+        # R_UL = self.unsup_weight * tf.reduce_mean(tf.squared_difference(Y_c, self.sym_x_u_y))
         self.c_loss = alpha_cla_adv * alpha * c_loss_dis + R_L + self.alpha_p*R_P
 
         """ Training """
@@ -298,6 +304,7 @@ class TripleGAN(object) :
 
             rampup_value = rampup(epoch - 1)
             unsup_weight = rampup_value * 100.0 if epoch > 1 else 0
+            random_d = numpy.random.permutation(len(self.unlabelled_X))
 
             # get batch data
             for idx in range(start_batch_id, self.num_batches):
@@ -305,14 +312,16 @@ class TripleGAN(object) :
                 batch_codes = self.data_y[idx * self.batch_size : (idx + 1) * self.batch_size]
 
                 batch_unlabelled_images = self.unlabelled_X[idx * self.unlabelled_batch_size : (idx + 1) * self.unlabelled_batch_size]
+                batch_unlabelled_images_d = self.unlabelled_X[random_d[idx * self.unlabelled_batch_size : (idx + 1) * self.unlabelled_batch_size]]
                 batch_unlabelled_images_y = self.unlabelled_y[idx * self.unlabelled_batch_size : (idx + 1) * self.unlabelled_batch_size]
 
                 batch_z = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
 
                 feed_dict = {
-                    self.inputs: batch_images, self.y: batch_codes,
-                    self.unlabelled_inputs: batch_unlabelled_images,
-                    self.unlabelled_inputs_y: batch_unlabelled_images_y,
+                    self.sym_x_l: batch_images, self.sym_y: batch_codes,
+                    self.sym_x_u: batch_unlabelled_images,
+                    self.sym_x_u_d: batch_unlabelled_images_d,
+                    self.sym_x_u_y: batch_unlabelled_images_y,
                     self.z: batch_z, self.alpha_p: alpha_p,
                     self.gan_lr: gan_lr, self.cla_lr: cla_lr,
                     self.unsup_weight : unsup_weight

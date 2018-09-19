@@ -63,13 +63,6 @@ def prepare_data(n):
     return labelled_x, labelled_y_vec, unlabelled_x, unlabelled_y_vec, test_data, test_labels_vec
 
 
-# ========================================================== #
-# ├─ _random_crop()
-# ├─ _random_flip_leftright()
-# ├─ data_augmentation()
-# └─ color_preprocessing()
-# ========================================================== #
-
 def _random_crop(batch, crop_shape, padding=None):
     oshape = np.shape(batch[0])
 
